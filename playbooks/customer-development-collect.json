@@ -1,6 +1,6 @@
 {
   "id": "customer-development-collect",
-  "version": 1,
+  "version": 2,
   "scope": "system",
   "title": "Customer Development: материалы клиентского чата → карта потребностей",
   "goal_template": "{goal}",
@@ -11,12 +11,25 @@
     "recovery_policy": "default"
   },
   "requires": {
-    "sections": ["marketing"],
-    "tools": ["cd_ingest", "cd_stage_rubric", "get_group_history"]
+    "sections": [
+      "marketing"
+    ],
+    "tools": [
+      "cd_ingest",
+      "cd_stage_rubric"
+    ]
   },
   "inputs": [
-    { "name": "stage", "description": "Опционально: alpha | closed-beta | product | rollout. Если не задано — определить на шаге stage.", "required": false },
-    { "name": "period", "description": "Опционально: окно материалов (например «последние 7 дней», «с 1 сентября»).", "required": false }
+    {
+      "name": "stage",
+      "description": "Опционально: alpha | closed-beta | product | rollout. Если не задано — определить на шаге stage.",
+      "required": false
+    },
+    {
+      "name": "period",
+      "description": "Опционально: окно материалов (например «последние 7 дней», «с 1 сентября»).",
+      "required": false
+    }
   ],
   "stages": [
     {
@@ -149,10 +162,18 @@
   ],
   "hooks": {
     "task_done": [
-      { "type": "notify", "to": "owner", "text": "Customer Development собран: материалы → карта потребностей. {goal}" }
+      {
+        "type": "notify",
+        "to": "owner",
+        "text": "Customer Development собран: материалы → карта потребностей. {goal}"
+      }
     ],
     "task_failed": [
-      { "type": "notify", "to": "owner", "text": "Сбор Customer Development застрял: {goal} — {error}" }
+      {
+        "type": "notify",
+        "to": "owner",
+        "text": "Сбор Customer Development застрял: {goal} — {error}"
+      }
     ]
   }
 }
