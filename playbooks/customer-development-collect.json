@@ -1,0 +1,158 @@
+{
+  "id": "customer-development-collect",
+  "version": 1,
+  "scope": "system",
+  "title": "Customer Development: материалы клиентского чата → карта потребностей",
+  "goal_template": "{goal}",
+  "user_value_template": "Материалы клиентского чата собраны и не потеряны (снимок в cd/messages.json), авторы сшиты без молчаливых слияний (cd/authors.json со статусом уверенности), стадия определена (cd/stage.json), ответы по вопросам стадии извлечены (cd/signals.json) и агрегированы в карту потребностей (cd/needs.json) с частотой по независимым авторам; опубликован отчёт с топ-потребностями, числами, уверенностью mapping и честными ограничениями.",
+  "defaults": {
+    "max_attempts": 3,
+    "execution_timeout_seconds": 1200,
+    "recovery_policy": "default"
+  },
+  "requires": {
+    "sections": ["marketing"],
+    "tools": ["cd_ingest", "cd_stage_rubric", "get_group_history"]
+  },
+  "inputs": [
+    { "name": "stage", "description": "Опционально: alpha | closed-beta | product | rollout. Если не задано — определить на шаге stage.", "required": false },
+    { "name": "period", "description": "Опционально: окно материалов (например «последние 7 дней», «с 1 сентября»).", "required": false }
+  ],
+  "stages": [
+    {
+      "id": "materials",
+      "title": "Materials — собрать материалы и снять в cd/messages.json",
+      "steps": [
+        {
+          "title": "Собрать материалы и накопить в cd/messages.json",
+          "instructions": "Собрать ВСЁ, что есть по продукту/клиенту из goal, и передать в `cd_ingest`:\n1) `get_group_history(since_hours=168, limit=1000)` для выделенного «тихого» чата — это основной канал (площадка хранит максимум 7 дней / 1000 сообщений, поэтому снимок обязателен);\n2) присланные боту медиа/файлы/голос (уже распознаны) и любые дампы в проекте — передать путями через `path`;\n3) если пользователь дал окно «period» — учесть его при выборке.\nВызвать `cd_ingest(messages=<из get_group_history>, path=[<файлы>], out_dir=\".\")` — инструмент нормализует, дедуплицирует по стабильному id и НАКАПЛИВАЕТ в cd/messages.json (повторный прогон не дублирует и не теряет). Вернуть added / skipped_duplicates / total / window. Ничего не выдумывать: нет материалов — сказать прямо, а не изобретать.",
+          "execution_kind": "agent",
+          "executor_role": "researcher",
+          "minimum_model_level": "bachelor",
+          "context_budget": "medium",
+          "validation": {
+            "command_exit_zero": "find . -maxdepth 4 -name messages.json | grep -q ."
+          }
+        },
+        {
+          "title": "Проверить, что снимок непустой и список авторов собран",
+          "instructions": "Проверить, что cd/messages.json непустой и cd/authors.raw.json содержит сырые имена авторов (выход cd_ingest). Если материалов ноль — честно остановиться с сообщением, а не продолжать на пустом.",
+          "execution_kind": "programmatic",
+          "validation": {
+            "command_exit_zero": "find . -maxdepth 4 -name authors.raw.json | grep -q ."
+          }
+        }
+      ]
+    },
+    {
+      "id": "authors",
+      "title": "Authors — identity resolution (без молчаливых слияний)",
+      "steps": [
+        {
+          "title": "Сшить авторов в cd/authors.json со статусом уверенности",
+          "instructions": "Прочитать cd/authors.raw.json и cd/messages.json. Построить cd/authors.json: {version, updatedAt, persons:[{id, canonical, aliases:[...], confidence:\"confident|probable|unknown\", evidence:[<id сообщений>]}], unresolved_author_count, notes}.\nПРАВИЛА: (1) никогда не сливать авторов молча — слияние только при ясном признаке (одно и то же display-имя + совпадающий контекст), статус confident; сомнительное — probable; неясное — отдельная сущность unknown. (2) Одно display-имя у разных людей — разделять. (3) Число сообщений, которые НЕ удалось приписать, зафиксировать в unresolved_author_count и вывести в отчёт явно. Ссылаться на rules из cd_stage_rubric().identity_resolution.",
+          "execution_kind": "agent",
+          "executor_role": "developer",
+          "minimum_model_level": "master",
+          "context_budget": "medium",
+          "validation": {
+            "command_exit_zero": "find . -maxdepth 4 -name authors.json | grep -q .",
+            "authors_mapping_has_confidence": true,
+            "no_silent_author_merge": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "stage",
+      "title": "Stage — определить стадию продукта",
+      "steps": [
+        {
+          "title": "Определить стадию и зафиксировать в cd/stage.json",
+          "instructions": "Определить стадию (alpha | closed-beta | product | rollout) из goal/контекста; если задан input stage — взять его; если неясно — задать пользователю ОДИН короткий вопрос. Получить рамку через `cd_stage_rubric(stage=...)`. Записать cd/stage.json: {stage, basis, rubric_version}. Стадия определяет, какие вопросы/сигналы искать на следующем шаге.",
+          "execution_kind": "agent",
+          "executor_role": "researcher",
+          "minimum_model_level": "bachelor",
+          "context_budget": "small",
+          "validation": {
+            "command_exit_zero": "find . -maxdepth 4 -name stage.json | grep -q .",
+            "stage_selected_from_rubric": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "extract",
+      "title": "Extract — извлечь ответы/сигналы по вопросам стадии",
+      "steps": [
+        {
+          "title": "Извлечь сигналы в cd/signals.json с привязкой к сообщениям",
+          "instructions": "По рамке стадии (вопросы/сигналы) пройти материалы и выписать cd/signals.json: [{stage, question, signal_type, quote, message_id, author_id, confidence}]. Каждый сигнал обязан ссылаться на конкретное сообщение (evidence), без выдуманных цитат. «Хочу кнопку X» — это признак проблемы (signal_type=solution_request), а не потребность. Ничего не додумывать: нет сигнала по вопросу — так и отметить.",
+          "execution_kind": "agent",
+          "executor_role": "developer",
+          "minimum_model_level": "master",
+          "context_budget": "large",
+          "validation": {
+            "command_exit_zero": "find . -maxdepth 4 -name signals.json | grep -q .",
+            "signals_cite_evidence": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "aggregate",
+      "title": "Aggregate — карта потребностей",
+      "steps": [
+        {
+          "title": "Свести сигналы в cd/needs.json (частота по независимым авторам)",
+          "instructions": "Собрать cd/needs.json по полям из cd_stage_rubric().needs_unit_fields и правилам aggregation_rules. Ключевое: frequency = число НЕЗАВИСИМЫХ авторов (persons из cd/authors.json), а не сообщений; близкие формулировки объединять в канон с синонимами, оригиналы не терять; приоритет = частота × severity × вес стадии; сегментировать до ранжирования. Проблему и решение не смешивать: statement = проблема/работа (underlying job), запросы фич — отдельный type.",
+          "execution_kind": "agent",
+          "executor_role": "developer",
+          "minimum_model_level": "master",
+          "context_budget": "large",
+          "validation": {
+            "command_exit_zero": "find . -maxdepth 4 -name needs.json | grep -q .",
+            "needs_frequency_by_distinct_authors": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "report",
+      "title": "Report — отчёт и честные ограничения",
+      "steps": [
+        {
+          "title": "Собрать отчёт и опубликовать ссылкой",
+          "instructions": "Записать report.md и опубликовать через publish_page. В отчёте: стадия; сколько материалов и авторов; топ-потребности (частота, severity, сегмент, цитаты); уверенность mapping (сколько persons confident/probable/unknown, сколько сообщений не приписано); что дальше. Все числа сверять с cd/needs.json / cd/authors.json, не по памяти.",
+          "execution_kind": "agent",
+          "executor_role": "reviewer",
+          "minimum_model_level": "master",
+          "context_budget": "medium",
+          "validation": {
+            "command_exit_zero": "find . -maxdepth 4 -name report.md | grep -q .",
+            "report_lists_top_needs_and_mapping_confidence": true
+          }
+        },
+        {
+          "title": "Ограничения и итог — проговорить, а не прятать",
+          "instructions": "Включить в итоговый ответ: (1) история чата хранится 7 дней / 1000 сообщений — снимок делается каждый прогон; (2) голос в «тихой» группе не расшифровывается автоматически (голос/звонки присылать боту адресно); (3) выборка смещена — отвечают активные; (4) неопознанные авторы остались unknown и не слиты; (5) какие вопросы стадии остались без данных.",
+          "execution_kind": "agent",
+          "executor_role": "reviewer",
+          "minimum_model_level": "bachelor",
+          "context_budget": "small",
+          "validation": {
+            "report_states_limitations": true
+          }
+        }
+      ]
+    }
+  ],
+  "hooks": {
+    "task_done": [
+      { "type": "notify", "to": "owner", "text": "Customer Development собран: материалы → карта потребностей. {goal}" }
+    ],
+    "task_failed": [
+      { "type": "notify", "to": "owner", "text": "Сбор Customer Development застрял: {goal} — {error}" }
+    ]
+  }
+}
